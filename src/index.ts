@@ -28,6 +28,11 @@ if (!JWT_SECRET) {
 app.use(cors());
 app.use(express.json());
 
+// Health check
+app.get('/api/test', (_req, res) => {
+  res.json({ status: 'ok', message: 'FiberTrack API is running 🚀', timestamp: new Date().toISOString() });
+});
+
 // Routes
 app.use('/api/auth', authRouter);
 app.use('/api/joints', jointsRouter);
