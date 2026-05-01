@@ -4,10 +4,10 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-// GET /api/cuts — fetch all cuts
-router.get('/', async (_req: AuthRequest, res: Response) => {
+// GET /api/cuts — fetch cuts for the authenticated user
+router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const cuts = await Cut.find().sort({ createdAt: -1 });
+    const cuts = await Cut.find({ userId: req.user!.userId }).sort({ createdAt: -1 });
     res.json(cuts);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch cuts' });
@@ -30,6 +30,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       severity,
       description: description || '',
       segmentId,
+      userId: req.user!.userId,
       markedBy: {
         userId: req.user!.userId,
         userName: req.user!.userName,
@@ -42,11 +43,11 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// PATCH /api/cuts/:id/fix — mark cut as fixed (auth required)
+// PATCH /api/cuts/:id/fix — mark cut as fixed (auth required, user-scoped)
 router.patch('/:id/fix', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const cut = await Cut.findByIdAndUpdate(
-      req.params.id,
+    const cut = await Cut.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user!.userId },
       {
         status: 'Fixed',
         fixedBy: {
@@ -69,10 +70,10 @@ router.patch('/:id/fix', authMiddleware, async (req: AuthRequest, res: Response)
   }
 });
 
-// DELETE /api/cuts/:id — delete cut (auth required)
+// DELETE /api/cuts/:id — delete cut (auth required, user-scoped)
 router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const deleted = await Cut.findByIdAndDelete(req.params.id);
+    const deleted = await Cut.findOneAndDelete({ _id: req.params.id, userId: req.user!.userId });
     if (!deleted) {
       res.status(404).json({ error: 'Cut not found' });
       return;
