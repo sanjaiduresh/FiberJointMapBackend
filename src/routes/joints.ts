@@ -6,6 +6,18 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
+// Haversine distance in meters
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // GET /api/joints
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
@@ -39,6 +51,66 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     res.status(201).json(joint);
   } catch (err) {
     res.status(500).json({ error: 'Failed to create joint' });
+  }
+});
+
+// PUT /api/joints/:id
+router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const { label, notes, jointType, cableType, fiberCount, lat, lng } = req.body;
+
+    const joint = await FiberJoint.findOne({ _id: req.params.id, userId: req.user!.userId });
+    if (!joint) {
+      res.status(404).json({ error: 'Joint not found' });
+      return;
+    }
+
+    const latChanged = lat != null && lat !== joint.lat;
+    const lngChanged = lng != null && lng !== joint.lng;
+
+    if (label !== undefined) joint.label = label;
+    if (notes !== undefined) joint.notes = notes;
+    if (jointType !== undefined) joint.jointType = jointType;
+    if (cableType !== undefined) joint.cableType = cableType;
+    if (fiberCount !== undefined) joint.fiberCount = fiberCount;
+    if (lat !== undefined) joint.lat = lat;
+    if (lng !== undefined) joint.lng = lng;
+
+    await joint.save();
+
+    if (latChanged || lngChanged) {
+      // Recalculate connected segment lengths
+      const connectedSegments = await Segment.find({
+        userId: req.user!.userId,
+        $or: [{ fromJointId: joint._id }, { toJointId: joint._id }],
+      });
+
+      for (const seg of connectedSegments) {
+        const fromJoint = await FiberJoint.findById(seg.fromJointId);
+        const toJoint = await FiberJoint.findById(seg.toJointId);
+        if (!fromJoint || !toJoint) continue;
+
+        const routePoints = [
+          { lat: fromJoint.lat, lng: fromJoint.lng },
+          ...(seg.waypoints || []),
+          { lat: toJoint.lat, lng: toJoint.lng },
+        ];
+        let autoDistance = 0;
+        for (let i = 0; i < routePoints.length - 1; i++) {
+          autoDistance += haversineMeters(
+            routePoints[i].lat, routePoints[i].lng,
+            routePoints[i + 1].lat, routePoints[i + 1].lng,
+          );
+        }
+        seg.lengthMeters = Math.round(autoDistance * 100) / 100;
+        await seg.save();
+      }
+    }
+
+    res.json(joint);
+  } catch (err) {
+    console.error('Update joint error:', err);
+    res.status(500).json({ error: 'Failed to update joint' });
   }
 });
 
