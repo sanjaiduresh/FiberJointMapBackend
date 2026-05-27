@@ -24,7 +24,12 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 
     const { approvalStatus } = req.query;
     if (approvalStatus && typeof approvalStatus === 'string') {
-      filter.approvalStatus = approvalStatus;
+      const statuses = approvalStatus.split(',');
+      if (statuses.length > 1) {
+        filter.approvalStatus = { $in: statuses };
+      } else {
+        filter.approvalStatus = approvalStatus;
+      }
     }
 
     const segments = await Segment.find(filter).sort({ createdAt: -1 });
@@ -109,14 +114,24 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// DELETE /api/segments/:id — OWNER only
-router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+// DELETE /api/segments/:id
+router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const deleted = await Segment.findOneAndDelete({ _id: req.params.id, organizationId: req.user!.organizationId });
-    if (!deleted) {
+    const segment = await Segment.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
+    if (!segment) {
       res.status(404).json({ error: 'Segment not found' });
       return;
     }
+
+    const isEmployee = req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER';
+    if (isEmployee) {
+      segment.approvalStatus = 'PENDING_DELETE';
+      await segment.save();
+      res.json({ message: 'Segment delete requested' });
+      return;
+    }
+
+    await Segment.findByIdAndDelete(req.params.id);
     res.json({ message: 'Segment deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete segment' });
@@ -256,7 +271,13 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
     ]);
 
     // Delete the original segment
-    await Segment.findByIdAndDelete(original._id);
+    const isEmployee = req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER';
+    if (isEmployee) {
+      original.approvalStatus = 'PENDING_DELETE';
+      await original.save();
+    } else {
+      await Segment.findByIdAndDelete(original._id);
+    }
 
     res.status(201).json({ spliceJoint, segmentA: segA, segmentB: segB, deletedSegmentId: original._id });
   } catch (err) {
@@ -266,15 +287,28 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
 // PUT /api/segments/:id/approve — OWNER only
 router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const segment = await Segment.findOneAndUpdate(
-      { _id: req.params.id, organizationId: req.user!.organizationId },
-      { approvalStatus: 'APPROVED' },
-      { new: true }
-    );
+    const segment = await Segment.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!segment) {
       res.status(404).json({ error: 'Segment not found' });
       return;
     }
+    
+    if (segment.approvalStatus === 'PENDING_DELETE') {
+      await Segment.findByIdAndDelete(segment._id);
+      res.json({ message: 'Segment deleted' });
+      return;
+    }
+
+    if (segment.approvalStatus === 'PENDING_EDIT' && segment.pendingEdits) {
+      // (If segment editing is ever added)
+      if (segment.pendingEdits.cableType !== undefined) segment.cableType = segment.pendingEdits.cableType;
+      if (segment.pendingEdits.fiberCount !== undefined) segment.fiberCount = segment.pendingEdits.fiberCount;
+    }
+
+    segment.pendingEdits = undefined;
+    segment.approvalStatus = 'APPROVED';
+    await segment.save();
+    
     res.json(segment);
   } catch (err) {
     res.status(500).json({ error: 'Failed to approve segment' });
@@ -284,15 +318,30 @@ router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: Aut
 // PUT /api/segments/:id/reject — OWNER only
 router.put('/:id/reject', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const segment = await Segment.findOneAndUpdate(
-      { _id: req.params.id, organizationId: req.user!.organizationId },
-      { approvalStatus: 'REJECTED' },
-      { new: true }
-    );
+    const segment = await Segment.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!segment) {
       res.status(404).json({ error: 'Segment not found' });
       return;
     }
+    
+    if (segment.approvalStatus === 'PENDING') {
+      await Segment.findByIdAndDelete(segment._id);
+      res.json({ message: 'Segment rejected and deleted' });
+      return;
+    }
+    
+    if (segment.approvalStatus === 'PENDING_DELETE') {
+      segment.approvalStatus = 'APPROVED';
+      await segment.save();
+    } else if (segment.approvalStatus === 'PENDING_EDIT') {
+      segment.pendingEdits = undefined;
+      segment.approvalStatus = 'APPROVED';
+      await segment.save();
+    } else {
+      segment.approvalStatus = 'REJECTED';
+      await segment.save();
+    }
+    
     res.json(segment);
   } catch (err) {
     res.status(500).json({ error: 'Failed to reject segment' });

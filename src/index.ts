@@ -2,15 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+
+dotenv.config();
+
 import jointsRouter from './routes/joints';
 import authRouter from './routes/auth';
 import cutsRouter from './routes/cuts';
 import segmentsRouter from './routes/segments';
 import usersRouter from './routes/users';
 import adminRouter from './routes/admin';
-
-dotenv.config();
-
 const app = express();
 const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI;

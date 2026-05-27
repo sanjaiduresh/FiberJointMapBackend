@@ -3,6 +3,14 @@ import FiberJoint from '../models/FiberJoint';
 import Segment from '../models/Segment';
 import Cut from '../models/Cut';
 import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
+import { v2 as cloudinary } from 'cloudinary';
+import multer from 'multer';
+
+// Configure Cloudinary from CLOUDINARY_URL env
+cloudinary.config();
+
+// Multer: store file in memory buffer (we stream it to Cloudinary)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const router = Router();
 
@@ -26,7 +34,12 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     // Allow filtering by approvalStatus query param
     const { approvalStatus } = req.query;
     if (approvalStatus && typeof approvalStatus === 'string') {
-      filter.approvalStatus = approvalStatus;
+      const statuses = approvalStatus.split(',');
+      if (statuses.length > 1) {
+        filter.approvalStatus = { $in: statuses };
+      } else {
+        filter.approvalStatus = approvalStatus;
+      }
     }
 
     const joints = await FiberJoint.find(filter).sort({ createdAt: -1 });
@@ -77,25 +90,47 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const latChanged = lat != null && lat !== joint.lat;
-    const lngChanged = lng != null && lng !== joint.lng;
+    const isEmployee = req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER';
+    const isApproved = joint.approvalStatus === 'APPROVED' || joint.approvalStatus === 'PENDING_EDIT';
+    const useDraftEdits = isEmployee && isApproved;
 
-    if (label !== undefined) joint.label = label;
-    if (notes !== undefined) joint.notes = notes;
-    if (jointType !== undefined) joint.jointType = jointType;
-    if (cableType !== undefined) joint.cableType = cableType;
-    if (fiberCount !== undefined) joint.fiberCount = fiberCount;
-    if (lat !== undefined) joint.lat = lat;
-    if (lng !== undefined) joint.lng = lng;
+    let hasChanges = false;
+    const updates: Partial<typeof joint> = {};
 
-    // Trigger approval flow if an employee changes the location
-    if (req.user!.role !== 'OWNER' && (latChanged || lngChanged)) {
-      joint.approvalStatus = 'PENDING';
+    if (label !== undefined && label !== joint.label) { updates.label = label; hasChanges = true; }
+    if (notes !== undefined && notes !== joint.notes) { updates.notes = notes; hasChanges = true; }
+    if (jointType !== undefined && jointType !== joint.jointType) { updates.jointType = jointType; hasChanges = true; }
+    if (cableType !== undefined && cableType !== joint.cableType) { updates.cableType = cableType; hasChanges = true; }
+    if (fiberCount !== undefined && fiberCount !== joint.fiberCount) { updates.fiberCount = fiberCount; hasChanges = true; }
+    if (lat !== undefined && lat !== joint.lat) { updates.lat = lat; hasChanges = true; }
+    if (lng !== undefined && lng !== joint.lng) { updates.lng = lng; hasChanges = true; }
+
+    const latChanged = useDraftEdits ? (updates.lat !== undefined) : (updates.lat !== undefined);
+
+    if (useDraftEdits) {
+      if (hasChanges) {
+        joint.pendingEdits = {
+          ...(joint.pendingEdits || {}),
+          ...updates,
+        };
+        joint.approvalStatus = 'PENDING_EDIT';
+        joint.markModified('pendingEdits');
+      }
+    } else {
+      if (updates.label !== undefined) joint.label = updates.label;
+      if (updates.notes !== undefined) joint.notes = updates.notes;
+      if (updates.jointType !== undefined) joint.jointType = updates.jointType;
+      if (updates.cableType !== undefined) joint.cableType = updates.cableType;
+      if (updates.fiberCount !== undefined) joint.fiberCount = updates.fiberCount;
+      if (updates.lat !== undefined) joint.lat = updates.lat;
+      if (updates.lng !== undefined) joint.lng = updates.lng;
     }
 
     await joint.save();
 
-    if (latChanged || lngChanged) {
+    // Only recalculate segments immediately if the direct lat/lng changed.
+    // If it's a draft edit, we do NOT recalculate segments until it's approved!
+    if (!useDraftEdits && (updates.lat !== undefined || updates.lng !== undefined)) {
       // Recalculate connected segment lengths
       const connectedSegments = await Segment.find({
         organizationId: req.user!.organizationId,
@@ -131,8 +166,8 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// DELETE /api/joints/:id — OWNER only
-router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+// DELETE /api/joints/:id
+router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!joint) {
@@ -145,6 +180,21 @@ router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequ
       organizationId: req.user!.organizationId,
       $or: [{ fromJointId: req.params.id }, { toJointId: req.params.id }],
     });
+
+    const isEmployee = req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER';
+    if (isEmployee) {
+      joint.approvalStatus = 'PENDING_DELETE';
+      await joint.save();
+
+      for (const seg of connectedSegments) {
+        seg.approvalStatus = 'PENDING_DELETE';
+        await seg.save();
+      }
+      res.json({ message: 'Delete requested', merged: false });
+      return;
+    }
+
+    // ── Admin logic below ──
 
     // ── Splice merge ─────────────────────────────────────────────────────────
     // If this is a Splice joint with exactly 2 segments, merge them back into
@@ -220,15 +270,44 @@ router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequ
 // PUT /api/joints/:id/approve — OWNER only
 router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const joint = await FiberJoint.findOneAndUpdate(
-      { _id: req.params.id, organizationId: req.user!.organizationId },
-      { approvalStatus: 'APPROVED' },
-      { new: true }
-    );
+    const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!joint) {
       res.status(404).json({ error: 'Joint not found' });
       return;
     }
+
+    if (joint.approvalStatus === 'PENDING_DELETE') {
+      // Find all segments connected to this joint and delete them if they are also PENDING_DELETE
+      const connectedSegments = await Segment.find({
+        organizationId: req.user!.organizationId,
+        $or: [{ fromJointId: req.params.id }, { toJointId: req.params.id }],
+      });
+      
+      const segmentIds = connectedSegments.map(s => s._id);
+      if (segmentIds.length > 0) {
+        await Cut.deleteMany({ segmentId: { $in: segmentIds }, organizationId: req.user!.organizationId });
+        await Segment.deleteMany({ _id: { $in: segmentIds }, organizationId: req.user!.organizationId });
+      }
+
+      await FiberJoint.findByIdAndDelete(req.params.id);
+      res.json({ message: 'Joint deleted' });
+      return;
+    }
+
+    if (joint.approvalStatus === 'PENDING_EDIT' && joint.pendingEdits) {
+      if (joint.pendingEdits.label !== undefined) joint.label = joint.pendingEdits.label;
+      if (joint.pendingEdits.notes !== undefined) joint.notes = joint.pendingEdits.notes;
+      if (joint.pendingEdits.jointType !== undefined) joint.jointType = joint.pendingEdits.jointType;
+      if (joint.pendingEdits.cableType !== undefined) joint.cableType = joint.pendingEdits.cableType;
+      if (joint.pendingEdits.fiberCount !== undefined) joint.fiberCount = joint.pendingEdits.fiberCount;
+      if (joint.pendingEdits.lat !== undefined) joint.lat = joint.pendingEdits.lat;
+      if (joint.pendingEdits.lng !== undefined) joint.lng = joint.pendingEdits.lng;
+    }
+
+    joint.pendingEdits = undefined;
+    joint.approvalStatus = 'APPROVED';
+    await joint.save();
+
     res.json(joint);
   } catch (err) {
     res.status(500).json({ error: 'Failed to approve joint' });
@@ -238,15 +317,39 @@ router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: Aut
 // PUT /api/joints/:id/reject — OWNER only
 router.put('/:id/reject', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const joint = await FiberJoint.findOneAndUpdate(
-      { _id: req.params.id, organizationId: req.user!.organizationId },
-      { approvalStatus: 'REJECTED' },
-      { new: true }
-    );
+    const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!joint) {
       res.status(404).json({ error: 'Joint not found' });
       return;
     }
+
+    if (joint.approvalStatus === 'PENDING') {
+      await FiberJoint.findByIdAndDelete(req.params.id);
+      res.json({ message: 'Joint rejected and deleted' });
+      return;
+    }
+
+    if (joint.approvalStatus === 'PENDING_DELETE') {
+      joint.approvalStatus = 'APPROVED';
+      await joint.save();
+      // Also restore segments that were pending delete along with this joint
+      await Segment.updateMany(
+        { 
+          organizationId: req.user!.organizationId,
+          $or: [{ fromJointId: req.params.id }, { toJointId: req.params.id }],
+          approvalStatus: 'PENDING_DELETE'
+        },
+        { approvalStatus: 'APPROVED' }
+      );
+    } else if (joint.approvalStatus === 'PENDING_EDIT') {
+      joint.pendingEdits = undefined;
+      joint.approvalStatus = 'APPROVED';
+      await joint.save();
+    } else {
+      joint.approvalStatus = 'REJECTED';
+      await joint.save();
+    }
+
     res.json(joint);
   } catch (err) {
     res.status(500).json({ error: 'Failed to reject joint' });
@@ -260,6 +363,97 @@ router.get('/base', authMiddleware, async (req: AuthRequest, res: Response) => {
     res.json(base || null);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch base joint' });
+  }
+});
+
+// POST /api/joints/:id/photos — Upload a photo to a joint
+router.post('/:id/photos', authMiddleware, upload.single('photo'), async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No photo file provided' });
+      return;
+    }
+
+    const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
+    if (!joint) {
+      res.status(404).json({ error: 'Joint not found' });
+      return;
+    }
+
+    // Upload to Cloudinary from memory buffer
+    const result = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: `fibertrack/${req.user!.organizationId}`,
+          resource_type: 'image',
+          transformation: [{ quality: 'auto', fetch_format: 'auto' }],
+        },
+        (error, result) => {
+          if (error || !result) reject(error || new Error('Upload failed'));
+          else resolve({ secure_url: result.secure_url, public_id: result.public_id });
+        },
+      );
+      stream.end(req.file!.buffer);
+    });
+
+    joint.photos.push({
+      url: result.secure_url,
+      publicId: result.public_id,
+      uploadedAt: new Date(),
+    });
+
+    // If an employee uploads a photo, force status to PENDING_EDIT if currently APPROVED
+    if (req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER') {
+      if (joint.approvalStatus === 'APPROVED' || joint.approvalStatus === 'PENDING_EDIT') {
+        joint.approvalStatus = 'PENDING_EDIT';
+      }
+    }
+
+    await joint.save();
+
+    res.status(201).json(joint);
+  } catch (err) {
+    console.error('Photo upload error:', err);
+    res.status(500).json({ error: 'Failed to upload photo' });
+  }
+});
+
+// DELETE /api/joints/:id/photos/:publicId — Remove a photo from a joint
+router.delete('/:id/photos/:publicId', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
+    if (!joint) {
+      res.status(404).json({ error: 'Joint not found' });
+      return;
+    }
+
+    // The publicId comes URL-encoded because it has slashes (e.g. fibertrack/orgId/filename)
+    const publicId = decodeURIComponent(req.params.publicId as string);
+    const photoIdx = joint.photos.findIndex(p => p.publicId === publicId);
+    if (photoIdx === -1) {
+      res.status(404).json({ error: 'Photo not found on this joint' });
+      return;
+    }
+
+    // Delete from Cloudinary
+    await cloudinary.uploader.destroy(publicId);
+
+    // Remove from DB
+    joint.photos.splice(photoIdx, 1);
+
+    // If an employee deletes a photo, force status to PENDING_EDIT if currently APPROVED
+    if (req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER') {
+      if (joint.approvalStatus === 'APPROVED' || joint.approvalStatus === 'PENDING_EDIT') {
+        joint.approvalStatus = 'PENDING_EDIT';
+      }
+    }
+
+    await joint.save();
+
+    res.json(joint);
+  } catch (err) {
+    console.error('Photo delete error:', err);
+    res.status(500).json({ error: 'Failed to delete photo' });
   }
 });
 

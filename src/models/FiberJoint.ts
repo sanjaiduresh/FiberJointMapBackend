@@ -1,6 +1,12 @@
 import { Schema, model, Document } from 'mongoose';
 
-export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PENDING_EDIT' | 'PENDING_DELETE';
+
+export interface IJointPhoto {
+  url: string;
+  publicId: string;
+  uploadedAt: Date;
+}
 
 export interface IFiberJoint extends Document {
   label: string;
@@ -13,6 +19,8 @@ export interface IFiberJoint extends Document {
   organizationId: string;
   createdBy: { userId: string; userName: string };
   approvalStatus: ApprovalStatus;
+  pendingEdits?: Partial<IFiberJoint>;
+  photos: IJointPhoto[];
   createdAt: Date;
 }
 
@@ -35,9 +43,15 @@ const FiberJointSchema = new Schema<IFiberJoint>({
   },
   approvalStatus: {
     type: String,
-    enum: ['PENDING', 'APPROVED', 'REJECTED'],
+    enum: ['PENDING', 'APPROVED', 'REJECTED', 'PENDING_EDIT', 'PENDING_DELETE'],
     default: 'APPROVED',
   },
+  pendingEdits: { type: Schema.Types.Mixed, default: null },
+  photos: [{
+    url: { type: String, required: true },
+    publicId: { type: String, required: true },
+    uploadedAt: { type: Date, default: Date.now },
+  }],
   createdAt: { type: Date, default: Date.now },
 });
 

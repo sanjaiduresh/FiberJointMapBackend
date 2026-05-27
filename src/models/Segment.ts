@@ -1,6 +1,6 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
-export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PENDING_EDIT' | 'PENDING_DELETE';
 
 export interface ISegment extends Document {
   fromJointId: Types.ObjectId;
@@ -12,6 +12,7 @@ export interface ISegment extends Document {
   organizationId: string;
   createdBy: { userId: string; userName: string };
   approvalStatus: ApprovalStatus;
+  pendingEdits?: Partial<ISegment>;
   createdAt: Date;
 }
 
@@ -32,9 +33,10 @@ const SegmentSchema = new Schema<ISegment>({
   },
   approvalStatus: {
     type: String,
-    enum: ['PENDING', 'APPROVED', 'REJECTED'],
+    enum: ['PENDING', 'APPROVED', 'REJECTED', 'PENDING_EDIT', 'PENDING_DELETE'],
     default: 'APPROVED',
   },
+  pendingEdits: { type: Schema.Types.Mixed, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 
