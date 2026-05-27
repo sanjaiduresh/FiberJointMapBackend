@@ -1,5 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
+export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
 export interface ICut extends Document {
   lat: number;
   lng: number;
@@ -7,10 +9,11 @@ export interface ICut extends Document {
   description: string;
   status: 'Cut' | 'Fixed';
   segmentId: Types.ObjectId;
-  userId: string;
+  organizationId: string;
   markedBy: { userId: string; userName: string };
   fixedBy?: { userId: string; userName: string };
   fixedAt?: Date;
+  approvalStatus: ApprovalStatus;
   createdAt: Date;
 }
 
@@ -21,7 +24,7 @@ const CutSchema = new Schema<ICut>({
   description: { type: String, default: '' },
   status: { type: String, enum: ['Cut', 'Fixed'], default: 'Cut' },
   segmentId: { type: Schema.Types.ObjectId, ref: 'Segment', required: true },
-  userId: { type: String, required: true, index: true },
+  organizationId: { type: String, required: true, index: true },
   markedBy: {
     userId: { type: String, required: true },
     userName: { type: String, required: true },
@@ -31,6 +34,11 @@ const CutSchema = new Schema<ICut>({
     userName: { type: String },
   },
   fixedAt: { type: Date },
+  approvalStatus: {
+    type: String,
+    enum: ['PENDING', 'APPROVED', 'REJECTED'],
+    default: 'APPROVED',
+  },
   createdAt: { type: Date, default: Date.now },
 });
 

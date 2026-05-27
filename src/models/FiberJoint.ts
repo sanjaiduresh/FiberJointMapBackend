@@ -1,5 +1,7 @@
 import { Schema, model, Document } from 'mongoose';
 
+export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
 export interface IFiberJoint extends Document {
   label: string;
   notes: string;
@@ -8,8 +10,9 @@ export interface IFiberJoint extends Document {
   fiberCount: number;
   lat: number;
   lng: number;
-  userId: string;
+  organizationId: string;
   createdBy: { userId: string; userName: string };
+  approvalStatus: ApprovalStatus;
   createdAt: Date;
 }
 
@@ -25,10 +28,15 @@ const FiberJointSchema = new Schema<IFiberJoint>({
   fiberCount: { type: Number, default: 12 },
   lat: { type: Number, required: true },
   lng: { type: Number, required: true },
-  userId: { type: String, required: true, index: true },
+  organizationId: { type: String, required: true, index: true },
   createdBy: {
     userId: { type: String, default: '' },
     userName: { type: String, default: 'Unknown' },
+  },
+  approvalStatus: {
+    type: String,
+    enum: ['PENDING', 'APPROVED', 'REJECTED'],
+    default: 'APPROVED',
   },
   createdAt: { type: Date, default: Date.now },
 });

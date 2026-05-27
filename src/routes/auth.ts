@@ -2,11 +2,12 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from '../models/User';
+import Organization from '../models/Organization';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-// POST /api/auth/register
+// POST /api/auth/register — creates a new ADMIN user
 router.post('/register', async (req: Request, res: Response) => {
   try {
     const { email, password, name } = req.body;
@@ -23,20 +24,37 @@ router.post('/register', async (req: Request, res: Response) => {
     }
 
     const hashed = await bcrypt.hash(password, 10);
-    const user = await User.create({ email: email.toLowerCase(), password: hashed, name });
+
+    const user = await User.create({
+      email: email.toLowerCase(),
+      password: hashed,
+      name,
+      role: 'ADMIN',
+    });
 
     const secret = process.env.JWT_SECRET!;
     const token = jwt.sign(
-      { userId: user._id.toString(), userName: user.name, email: user.email },
+      {
+        userId: user._id.toString(),
+        userName: user.name,
+        email: user.email,
+        role: 'ADMIN',
+      },
       secret,
       { expiresIn: '30d' }
     );
 
     res.status(201).json({
       token,
-      user: { id: user._id, email: user.email, name: user.name },
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: 'ADMIN',
+      },
     });
   } catch (err) {
+    console.error('Registration error:', err);
     res.status(500).json({ error: 'Registration failed' });
   }
 });
@@ -63,16 +81,31 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
+    const org = await Organization.findById(user.organizationId);
+
     const secret = process.env.JWT_SECRET!;
     const token = jwt.sign(
-      { userId: user._id.toString(), userName: user.name, email: user.email },
+      {
+        userId: user._id.toString(),
+        userName: user.name,
+        email: user.email,
+        organizationId: user.organizationId,
+        role: user.role,
+      },
       secret,
       { expiresIn: '30d' }
     );
 
     res.json({
       token,
-      user: { id: user._id, email: user.email, name: user.name },
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        organizationId: user.organizationId,
+        role: user.role,
+        organizationName: org?.name || 'Unknown',
+      },
     });
   } catch (err) {
     res.status(500).json({ error: 'Login failed' });
@@ -87,7 +120,17 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    res.json({ id: user._id, email: user.email, name: user.name });
+
+    const org = await Organization.findById(user.organizationId);
+
+    res.json({
+      id: user._id,
+      email: user.email,
+      name: user.name,
+      organizationId: user.organizationId,
+      role: user.role,
+      organizationName: org?.name || 'Unknown',
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch user' });
   }

@@ -1,5 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
+export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
 export interface ISegment extends Document {
   fromJointId: Types.ObjectId;
   toJointId: Types.ObjectId;
@@ -7,8 +9,9 @@ export interface ISegment extends Document {
   cableType: 'Single Mode' | 'Multi Mode';
   fiberCount: number;
   lengthMeters: number;
-  userId: string;
+  organizationId: string;
   createdBy: { userId: string; userName: string };
+  approvalStatus: ApprovalStatus;
   createdAt: Date;
 }
 
@@ -22,10 +25,15 @@ const SegmentSchema = new Schema<ISegment>({
   cableType: { type: String, enum: ['Single Mode', 'Multi Mode'], required: true },
   fiberCount: { type: Number, required: true },
   lengthMeters: { type: Number, required: true },
-  userId: { type: String, required: true, index: true },
+  organizationId: { type: String, required: true, index: true },
   createdBy: {
     userId: { type: String, required: true },
     userName: { type: String, required: true },
+  },
+  approvalStatus: {
+    type: String,
+    enum: ['PENDING', 'APPROVED', 'REJECTED'],
+    default: 'APPROVED',
   },
   createdAt: { type: Date, default: Date.now },
 });

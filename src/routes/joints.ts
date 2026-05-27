@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import FiberJoint from '../models/FiberJoint';
 import Segment from '../models/Segment';
 import Cut from '../models/Cut';
-import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -21,7 +21,15 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
 // GET /api/joints
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const joints = await FiberJoint.find({ userId: req.user!.userId }).sort({ createdAt: -1 });
+    const filter: any = { organizationId: req.user!.organizationId };
+
+    // Allow filtering by approvalStatus query param
+    const { approvalStatus } = req.query;
+    if (approvalStatus && typeof approvalStatus === 'string') {
+      filter.approvalStatus = approvalStatus;
+    }
+
+    const joints = await FiberJoint.find(filter).sort({ createdAt: -1 });
     res.json(joints);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch joints' });
@@ -38,6 +46,9 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    // EMPLOYEE creations are PENDING, OWNER creations are APPROVED
+    const approvalStatus = req.user!.role === 'OWNER' ? 'APPROVED' : 'PENDING';
+
     const joint = await FiberJoint.create({
       label,
       notes: notes || '',
@@ -45,8 +56,9 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       cableType: cableType || 'Single Mode',
       fiberCount: fiberCount ?? 12,
       lat, lng,
-      userId: req.user!.userId,
+      organizationId: req.user!.organizationId,
       createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+      approvalStatus,
     });
     res.status(201).json(joint);
   } catch (err) {
@@ -59,7 +71,7 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const { label, notes, jointType, cableType, fiberCount, lat, lng } = req.body;
 
-    const joint = await FiberJoint.findOne({ _id: req.params.id, userId: req.user!.userId });
+    const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!joint) {
       res.status(404).json({ error: 'Joint not found' });
       return;
@@ -76,12 +88,17 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
     if (lat !== undefined) joint.lat = lat;
     if (lng !== undefined) joint.lng = lng;
 
+    // Trigger approval flow if an employee changes the location
+    if (req.user!.role !== 'OWNER' && (latChanged || lngChanged)) {
+      joint.approvalStatus = 'PENDING';
+    }
+
     await joint.save();
 
     if (latChanged || lngChanged) {
       // Recalculate connected segment lengths
       const connectedSegments = await Segment.find({
-        userId: req.user!.userId,
+        organizationId: req.user!.organizationId,
         $or: [{ fromJointId: joint._id }, { toJointId: joint._id }],
       });
 
@@ -114,10 +131,10 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// DELETE /api/joints/:id
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+// DELETE /api/joints/:id — OWNER only
+router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const joint = await FiberJoint.findOne({ _id: req.params.id, userId: req.user!.userId });
+    const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!joint) {
       res.status(404).json({ error: 'Joint not found' });
       return;
@@ -125,7 +142,7 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
 
     // Find all segments connected to this joint
     const connectedSegments = await Segment.find({
-      userId: req.user!.userId,
+      organizationId: req.user!.organizationId,
       $or: [{ fromJointId: req.params.id }, { toJointId: req.params.id }],
     });
 
@@ -147,15 +164,12 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
         : segB.fromJointId;
 
       // Orient segA waypoints so they run outerA → splice
-      // If segA.fromJointId === outerA, waypoints are already in the right order.
-      // If segA.toJointId === outerA (i.e. the segment was stored as splice→outerA), reverse.
       const waypointsA: Array<{ lat: number; lng: number }> =
         segA.fromJointId.toString() === outerA.toString()
           ? segA.waypoints ?? []
           : [...(segA.waypoints ?? [])].reverse();
 
       // Orient segB waypoints so they run splice → outerB
-      // If segB.fromJointId === spliceId, waypoints are already in the right order.
       const waypointsB: Array<{ lat: number; lng: number }> =
         segB.fromJointId.toString() === spliceId
           ? segB.waypoints ?? []
@@ -169,14 +183,15 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
         fiberCount: segA.fiberCount,
         waypoints: [...waypointsA, ...waypointsB],
         lengthMeters: (segA.lengthMeters ?? 0) + (segB.lengthMeters ?? 0),
-        userId: req.user!.userId,
+        organizationId: req.user!.organizationId,
         createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+        approvalStatus: 'APPROVED',
       });
 
       // Delete cuts on both old segments
       await Cut.deleteMany({
         segmentId: { $in: [segA._id, segB._id] },
-        userId: req.user!.userId,
+        organizationId: req.user!.organizationId,
       });
 
       // Delete the two original segments
@@ -187,8 +202,8 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
       const segmentIds = connectedSegments.map((s) => s._id);
 
       if (segmentIds.length > 0) {
-        await Cut.deleteMany({ segmentId: { $in: segmentIds }, userId: req.user!.userId });
-        await Segment.deleteMany({ _id: { $in: segmentIds }, userId: req.user!.userId });
+        await Cut.deleteMany({ segmentId: { $in: segmentIds }, organizationId: req.user!.organizationId });
+        await Segment.deleteMany({ _id: { $in: segmentIds }, organizationId: req.user!.organizationId });
       }
     }
 
@@ -202,10 +217,46 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
   }
 });
 
+// PUT /api/joints/:id/approve — OWNER only
+router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  try {
+    const joint = await FiberJoint.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.user!.organizationId },
+      { approvalStatus: 'APPROVED' },
+      { new: true }
+    );
+    if (!joint) {
+      res.status(404).json({ error: 'Joint not found' });
+      return;
+    }
+    res.json(joint);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to approve joint' });
+  }
+});
+
+// PUT /api/joints/:id/reject — OWNER only
+router.put('/:id/reject', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  try {
+    const joint = await FiberJoint.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.user!.organizationId },
+      { approvalStatus: 'REJECTED' },
+      { new: true }
+    );
+    if (!joint) {
+      res.status(404).json({ error: 'Joint not found' });
+      return;
+    }
+    res.json(joint);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reject joint' });
+  }
+});
+
 // GET /api/joints/base
 router.get('/base', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const base = await FiberJoint.findOne({ userId: req.user!.userId, jointType: 'Base' });
+    const base = await FiberJoint.findOne({ organizationId: req.user!.organizationId, jointType: 'Base' });
     res.json(base || null);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch base joint' });

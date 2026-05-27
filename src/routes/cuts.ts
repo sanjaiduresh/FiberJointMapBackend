@@ -1,13 +1,20 @@
 import { Router, Response } from 'express';
 import Cut from '../models/Cut';
-import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-// GET /api/cuts — fetch cuts for the authenticated user
+// GET /api/cuts — fetch cuts for the organization
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const cuts = await Cut.find({ userId: req.user!.userId }).sort({ createdAt: -1 });
+    const filter: any = { organizationId: req.user!.organizationId };
+
+    const { approvalStatus } = req.query;
+    if (approvalStatus && typeof approvalStatus === 'string') {
+      filter.approvalStatus = approvalStatus;
+    }
+
+    const cuts = await Cut.find(filter).sort({ createdAt: -1 });
     res.json(cuts);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch cuts' });
@@ -24,17 +31,20 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    const approvalStatus = req.user!.role === 'OWNER' ? 'APPROVED' : 'PENDING';
+
     const cut = await Cut.create({
       lat,
       lng,
       severity,
       description: description || '',
       segmentId,
-      userId: req.user!.userId,
+      organizationId: req.user!.organizationId,
       markedBy: {
         userId: req.user!.userId,
         userName: req.user!.userName,
       },
+      approvalStatus,
     });
 
     res.status(201).json(cut);
@@ -43,11 +53,11 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// PATCH /api/cuts/:id/fix — mark cut as fixed (auth required, user-scoped)
+// PATCH /api/cuts/:id/fix — mark cut as fixed (auth required, org-scoped)
 router.patch('/:id/fix', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const cut = await Cut.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user!.userId },
+      { _id: req.params.id, organizationId: req.user!.organizationId },
       {
         status: 'Fixed',
         fixedBy: {
@@ -70,10 +80,10 @@ router.patch('/:id/fix', authMiddleware, async (req: AuthRequest, res: Response)
   }
 });
 
-// DELETE /api/cuts/:id — delete cut (auth required, user-scoped)
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+// DELETE /api/cuts/:id — OWNER only
+router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const deleted = await Cut.findOneAndDelete({ _id: req.params.id, userId: req.user!.userId });
+    const deleted = await Cut.findOneAndDelete({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!deleted) {
       res.status(404).json({ error: 'Cut not found' });
       return;

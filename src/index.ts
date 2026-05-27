@@ -6,6 +6,8 @@ import jointsRouter from './routes/joints';
 import authRouter from './routes/auth';
 import cutsRouter from './routes/cuts';
 import segmentsRouter from './routes/segments';
+import usersRouter from './routes/users';
+import adminRouter from './routes/admin';
 
 dotenv.config();
 
@@ -38,6 +40,8 @@ app.use('/api/auth', authRouter);
 app.use('/api/joints', jointsRouter);
 app.use('/api/cuts', cutsRouter);
 app.use('/api/segments', segmentsRouter);
+app.use('/api/users', usersRouter);
+app.use('/api/admin', adminRouter);
 
 // Connect to MongoDB and start server
 mongoose

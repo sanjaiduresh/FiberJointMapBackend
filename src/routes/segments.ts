@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import Segment from '../models/Segment';
 import FiberJoint from '../models/FiberJoint';
-import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -17,10 +17,17 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// GET /api/segments — fetch segments for the authenticated user
+// GET /api/segments — fetch segments for the organization
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const segments = await Segment.find({ userId: req.user!.userId }).sort({ createdAt: -1 });
+    const filter: any = { organizationId: req.user!.organizationId };
+
+    const { approvalStatus } = req.query;
+    if (approvalStatus && typeof approvalStatus === 'string') {
+      filter.approvalStatus = approvalStatus;
+    }
+
+    const segments = await Segment.find(filter).sort({ createdAt: -1 });
     res.json(segments);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch segments' });
@@ -42,10 +49,10 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Look up joints (must belong to this user)
+    // Look up joints (must belong to this organization)
     const [fromJoint, toJoint] = await Promise.all([
-      FiberJoint.findOne({ _id: fromJointId, userId: req.user!.userId }),
-      FiberJoint.findOne({ _id: toJointId, userId: req.user!.userId }),
+      FiberJoint.findOne({ _id: fromJointId, organizationId: req.user!.organizationId }),
+      FiberJoint.findOne({ _id: toJointId, organizationId: req.user!.organizationId }),
     ]);
 
     if (!fromJoint || !toJoint) {
@@ -78,6 +85,9 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       ? Math.round(lengthMeters * 100) / 100
       : autoDistance;
 
+    // EMPLOYEE creations are PENDING, OWNER creations are APPROVED
+    const approvalStatus = req.user!.role === 'OWNER' ? 'APPROVED' : 'PENDING';
+
     const segment = await Segment.create({
       fromJointId,
       toJointId,
@@ -85,11 +95,12 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       cableType,
       fiberCount,
       lengthMeters: finalLength,
-      userId: req.user!.userId,
+      organizationId: req.user!.organizationId,
       createdBy: {
         userId: req.user!.userId,
         userName: req.user!.userName,
       },
+      approvalStatus,
     });
 
     res.status(201).json(segment);
@@ -98,10 +109,10 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// DELETE /api/segments/:id — delete segment (auth required, user-scoped)
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+// DELETE /api/segments/:id — OWNER only
+router.delete('/:id', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
-    const deleted = await Segment.findOneAndDelete({ _id: req.params.id, userId: req.user!.userId });
+    const deleted = await Segment.findOneAndDelete({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!deleted) {
       res.status(404).json({ error: 'Segment not found' });
       return;
@@ -111,6 +122,44 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
     res.status(500).json({ error: 'Failed to delete segment' });
   }
 });
+
+// PUT /api/segments/:id/approve — OWNER only
+router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  try {
+    const segment = await Segment.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.user!.organizationId },
+      { approvalStatus: 'APPROVED' },
+      { new: true }
+    );
+    if (!segment) {
+      res.status(404).json({ error: 'Segment not found' });
+      return;
+    }
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to approve segment' });
+  }
+});
+
+// PUT /api/segments/:id/reject — OWNER only
+router.put('/:id/reject', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  try {
+    const segment = await Segment.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.user!.organizationId },
+      { approvalStatus: 'REJECTED' },
+      { new: true }
+    );
+    if (!segment) {
+      res.status(404).json({ error: 'Segment not found' });
+      return;
+    }
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reject segment' });
+  }
+});
+
+// POST /api/segments/:id/splice
 router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const { label, notes, jointType, cableType, fiberCount, lat, lng } = req.body;
@@ -120,21 +169,24 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
       return;
     }
 
-    // Find the original segment (must belong to this user)
-    const original = await Segment.findOne({ _id: req.params.id, userId: req.user!.userId });
+    // Find the original segment (must belong to this org)
+    const original = await Segment.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!original) {
       res.status(404).json({ error: 'Segment not found' });
       return;
     }
 
     const [fromJoint, toJoint] = await Promise.all([
-      FiberJoint.findOne({ _id: original.fromJointId, userId: req.user!.userId }),
-      FiberJoint.findOne({ _id: original.toJointId, userId: req.user!.userId }),
+      FiberJoint.findOne({ _id: original.fromJointId, organizationId: req.user!.organizationId }),
+      FiberJoint.findOne({ _id: original.toJointId, organizationId: req.user!.organizationId }),
     ]);
     if (!fromJoint || !toJoint) {
       res.status(404).json({ error: 'Original joints not found' });
       return;
     }
+
+    // EMPLOYEE creations are PENDING, OWNER creations are APPROVED
+    const approvalStatus = req.user!.role === 'OWNER' ? 'APPROVED' : 'PENDING';
 
     // Create the splice joint
     const spliceJoint = await FiberJoint.create({
@@ -144,8 +196,9 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
       cableType: cableType || original.cableType,
       fiberCount: fiberCount ?? original.fiberCount,
       lat, lng,
-      userId: req.user!.userId,
+      organizationId: req.user!.organizationId,
       createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+      approvalStatus,
     });
 
     // Split waypoints: those before splice go to segment A, those after go to segment B
@@ -185,8 +238,9 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
         cableType: original.cableType,
         fiberCount: original.fiberCount,
         lengthMeters: Math.round(distA * 100) / 100,
-        userId: req.user!.userId,
+        organizationId: req.user!.organizationId,
         createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+        approvalStatus,
       }),
       Segment.create({
         fromJointId: spliceJoint._id,
@@ -195,8 +249,9 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
         cableType: original.cableType,
         fiberCount: original.fiberCount,
         lengthMeters: Math.round(distB * 100) / 100,
-        userId: req.user!.userId,
+        organizationId: req.user!.organizationId,
         createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+        approvalStatus,
       }),
     ]);
 
@@ -208,4 +263,40 @@ router.post('/:id/splice', authMiddleware, async (req: AuthRequest, res: Respons
     res.status(500).json({ error: 'Failed to splice joint' });
   }
 });
+// PUT /api/segments/:id/approve — OWNER only
+router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  try {
+    const segment = await Segment.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.user!.organizationId },
+      { approvalStatus: 'APPROVED' },
+      { new: true }
+    );
+    if (!segment) {
+      res.status(404).json({ error: 'Segment not found' });
+      return;
+    }
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to approve segment' });
+  }
+});
+
+// PUT /api/segments/:id/reject — OWNER only
+router.put('/:id/reject', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  try {
+    const segment = await Segment.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.user!.organizationId },
+      { approvalStatus: 'REJECTED' },
+      { new: true }
+    );
+    if (!segment) {
+      res.status(404).json({ error: 'Segment not found' });
+      return;
+    }
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reject segment' });
+  }
+});
+
 export default router;
