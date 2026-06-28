@@ -42,7 +42,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 // POST /api/segments — create a segment between two joints (auth required)
 router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { fromJointId, toJointId, cableType, fiberCount, waypoints, lengthMeters } = req.body;
+    const { fromJointId, toJointId, cableType, fiberCount, waypoints, lengthMeters, extraLengthMeters } = req.body;
 
     if (!fromJointId || !toJointId || !cableType || fiberCount == null) {
       res.status(400).json({ error: 'fromJointId, toJointId, cableType, fiberCount required' });
@@ -100,6 +100,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       cableType,
       fiberCount,
       lengthMeters: finalLength,
+      extraLengthMeters: extraLengthMeters || 0,
       organizationId: req.user!.organizationId,
       createdBy: {
         userId: req.user!.userId,
@@ -135,6 +136,79 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
     res.json({ message: 'Segment deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete segment' });
+  }
+});
+
+// PUT /api/segments/:id — Edit a segment
+router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const { cableType, fiberCount, lengthMeters, extraLengthMeters, waypoints } = req.body;
+
+    const segment = await Segment.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
+    if (!segment) {
+      res.status(404).json({ error: 'Segment not found' });
+      return;
+    }
+
+    const isEmployee = req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER';
+    const isApproved = segment.approvalStatus === 'APPROVED' || segment.approvalStatus === 'PENDING_EDIT';
+    const useDraftEdits = isEmployee && isApproved;
+
+    let hasChanges = false;
+    const updates: Partial<typeof segment> = {};
+
+    if (cableType !== undefined && cableType !== segment.cableType) { updates.cableType = cableType; hasChanges = true; }
+    if (fiberCount !== undefined && fiberCount !== segment.fiberCount) { updates.fiberCount = fiberCount; hasChanges = true; }
+    if (lengthMeters !== undefined && lengthMeters !== segment.lengthMeters) { updates.lengthMeters = lengthMeters; hasChanges = true; }
+    if (extraLengthMeters !== undefined && extraLengthMeters !== segment.extraLengthMeters) { updates.extraLengthMeters = extraLengthMeters; hasChanges = true; }
+    if (waypoints !== undefined) {
+      const validWaypoints: Array<{ lat: number; lng: number }> = Array.isArray(waypoints)
+        ? waypoints.filter((w: any) => typeof w.lat === 'number' && typeof w.lng === 'number')
+        : [];
+      updates.waypoints = validWaypoints;
+      hasChanges = true;
+
+      // Recalculate length
+      const fromJoint = await FiberJoint.findOne({ _id: segment.fromJointId, organizationId: req.user!.organizationId });
+      const toJoint = await FiberJoint.findOne({ _id: segment.toJointId, organizationId: req.user!.organizationId });
+      if (fromJoint && toJoint) {
+        const routePoints = [
+          { lat: fromJoint.lat, lng: fromJoint.lng },
+          ...validWaypoints,
+          { lat: toJoint.lat, lng: toJoint.lng },
+        ];
+        let autoDistance = 0;
+        for (let i = 0; i < routePoints.length - 1; i++) {
+          autoDistance += haversineMeters(
+            routePoints[i].lat, routePoints[i].lng,
+            routePoints[i + 1].lat, routePoints[i + 1].lng,
+          );
+        }
+        updates.lengthMeters = Math.round(autoDistance * 100) / 100;
+      }
+    }
+
+    if (useDraftEdits) {
+      if (hasChanges) {
+        segment.pendingEdits = {
+          ...(segment.pendingEdits || {}),
+          ...updates,
+        };
+        segment.approvalStatus = 'PENDING_EDIT';
+        segment.markModified('pendingEdits');
+      }
+    } else {
+      if (updates.cableType !== undefined) segment.cableType = updates.cableType;
+      if (updates.fiberCount !== undefined) segment.fiberCount = updates.fiberCount;
+      if (updates.lengthMeters !== undefined) segment.lengthMeters = updates.lengthMeters;
+      if (updates.extraLengthMeters !== undefined) segment.extraLengthMeters = updates.extraLengthMeters;
+      if (updates.waypoints !== undefined) segment.waypoints = updates.waypoints;
+    }
+
+    await segment.save();
+    res.json(segment);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update segment' });
   }
 });
 
@@ -300,9 +374,11 @@ router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: Aut
     }
 
     if (segment.approvalStatus === 'PENDING_EDIT' && segment.pendingEdits) {
-      // (If segment editing is ever added)
       if (segment.pendingEdits.cableType !== undefined) segment.cableType = segment.pendingEdits.cableType;
       if (segment.pendingEdits.fiberCount !== undefined) segment.fiberCount = segment.pendingEdits.fiberCount;
+      if (segment.pendingEdits.lengthMeters !== undefined) segment.lengthMeters = segment.pendingEdits.lengthMeters;
+      if (segment.pendingEdits.extraLengthMeters !== undefined) segment.extraLengthMeters = segment.pendingEdits.extraLengthMeters;
+      if (segment.pendingEdits.waypoints !== undefined) segment.waypoints = segment.pendingEdits.waypoints;
     }
 
     segment.pendingEdits = undefined;

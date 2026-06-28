@@ -14,6 +14,7 @@ export interface IFiberJoint extends Document {
   jointType: 'Base' | 'Main' | 'Sub' | 'Splice';
   cableType: 'Single Mode' | 'Multi Mode';
   fiberCount: number;
+  icon: string;
   lat: number;
   lng: number;
   organizationId: string;
@@ -34,6 +35,7 @@ const FiberJointSchema = new Schema<IFiberJoint>({
   },
   cableType: { type: String, enum: ['Single Mode', 'Multi Mode'], default: 'Single Mode' },
   fiberCount: { type: Number, default: 12 },
+  icon: { type: String, default: 'default' },
   lat: { type: Number, required: true },
   lng: { type: Number, required: true },
   organizationId: { type: String, required: true, index: true },

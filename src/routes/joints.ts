@@ -52,7 +52,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 // POST /api/joints
 router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { label, notes, lat, lng, cableType, fiberCount, jointType } = req.body;
+    const { label, notes, lat, lng, cableType, fiberCount, jointType, icon } = req.body;
 
     if (!label || lat == null || lng == null) {
       res.status(400).json({ error: 'label, lat, and lng are required' });
@@ -68,6 +68,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       jointType: jointType || 'Main',
       cableType: cableType || 'Single Mode',
       fiberCount: fiberCount ?? 12,
+      icon: icon || 'default',
       lat, lng,
       organizationId: req.user!.organizationId,
       createdBy: { userId: req.user!.userId, userName: req.user!.userName },
@@ -82,7 +83,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 // PUT /api/joints/:id
 router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { label, notes, jointType, cableType, fiberCount, lat, lng } = req.body;
+    const { label, notes, jointType, cableType, fiberCount, lat, lng, icon } = req.body;
 
     const joint = await FiberJoint.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!joint) {
@@ -102,6 +103,7 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
     if (jointType !== undefined && jointType !== joint.jointType) { updates.jointType = jointType; hasChanges = true; }
     if (cableType !== undefined && cableType !== joint.cableType) { updates.cableType = cableType; hasChanges = true; }
     if (fiberCount !== undefined && fiberCount !== joint.fiberCount) { updates.fiberCount = fiberCount; hasChanges = true; }
+    if (icon !== undefined && icon !== joint.icon) { updates.icon = icon; hasChanges = true; }
     if (lat !== undefined && lat !== joint.lat) { updates.lat = lat; hasChanges = true; }
     if (lng !== undefined && lng !== joint.lng) { updates.lng = lng; hasChanges = true; }
 
@@ -122,6 +124,7 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
       if (updates.jointType !== undefined) joint.jointType = updates.jointType;
       if (updates.cableType !== undefined) joint.cableType = updates.cableType;
       if (updates.fiberCount !== undefined) joint.fiberCount = updates.fiberCount;
+      if (updates.icon !== undefined) joint.icon = updates.icon;
       if (updates.lat !== undefined) joint.lat = updates.lat;
       if (updates.lng !== undefined) joint.lng = updates.lng;
     }
@@ -302,6 +305,7 @@ router.put('/:id/approve', authMiddleware, requireRole('OWNER'), async (req: Aut
       if (joint.pendingEdits.fiberCount !== undefined) joint.fiberCount = joint.pendingEdits.fiberCount;
       if (joint.pendingEdits.lat !== undefined) joint.lat = joint.pendingEdits.lat;
       if (joint.pendingEdits.lng !== undefined) joint.lng = joint.pendingEdits.lng;
+      if (joint.pendingEdits.icon !== undefined) joint.icon = joint.pendingEdits.icon;
     }
 
     joint.pendingEdits = undefined;

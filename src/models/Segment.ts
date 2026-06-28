@@ -9,6 +9,7 @@ export interface ISegment extends Document {
   cableType: 'Single Mode' | 'Multi Mode';
   fiberCount: number;
   lengthMeters: number;
+  extraLengthMeters: number;
   organizationId: string;
   createdBy: { userId: string; userName: string };
   approvalStatus: ApprovalStatus;
@@ -26,6 +27,7 @@ const SegmentSchema = new Schema<ISegment>({
   cableType: { type: String, enum: ['Single Mode', 'Multi Mode'], required: true },
   fiberCount: { type: Number, required: true },
   lengthMeters: { type: Number, required: true },
+  extraLengthMeters: { type: Number, default: 0 },
   organizationId: { type: String, required: true, index: true },
   createdBy: {
     userId: { type: String, required: true },
