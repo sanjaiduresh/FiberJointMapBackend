@@ -22,7 +22,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const filter: any = { organizationId: req.user!.organizationId };
 
-    const { approvalStatus } = req.query;
+    const { approvalStatus, wireId, cableType } = req.query;
     if (approvalStatus && typeof approvalStatus === 'string') {
       const statuses = approvalStatus.split(',');
       if (statuses.length > 1) {
@@ -30,6 +30,12 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       } else {
         filter.approvalStatus = approvalStatus;
       }
+    }
+    if (wireId && typeof wireId === 'string') {
+      filter.wireId = wireId;
+    }
+    if (cableType && typeof cableType === 'string') {
+      filter.cableType = cableType;
     }
 
     const segments = await Segment.find(filter).sort({ createdAt: -1 });

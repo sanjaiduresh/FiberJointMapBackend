@@ -32,7 +32,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     const filter: any = { organizationId: req.user!.organizationId };
 
     // Allow filtering by approvalStatus query param
-    const { approvalStatus } = req.query;
+    const { approvalStatus, jointType, cableType } = req.query;
     if (approvalStatus && typeof approvalStatus === 'string') {
       const statuses = approvalStatus.split(',');
       if (statuses.length > 1) {
@@ -40,6 +40,17 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       } else {
         filter.approvalStatus = approvalStatus;
       }
+    }
+    if (jointType && typeof jointType === 'string') {
+      const types = jointType.split(',');
+      if (types.length > 1) {
+        filter.jointType = { $in: types };
+      } else {
+        filter.jointType = jointType;
+      }
+    }
+    if (cableType && typeof cableType === 'string') {
+      filter.cableType = cableType;
     }
 
     const joints = await FiberJoint.find(filter).sort({ createdAt: -1 });
