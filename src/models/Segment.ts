@@ -10,6 +10,7 @@ export interface ISegment extends Document {
   fiberCount: number;
   lengthMeters: number;
   extraLengthMeters: number;
+  wireId?: Types.ObjectId;
   organizationId: string;
   createdBy: { userId: string; userName: string };
   approvalStatus: ApprovalStatus;
@@ -28,6 +29,7 @@ const SegmentSchema = new Schema<ISegment>({
   fiberCount: { type: Number, required: true },
   lengthMeters: { type: Number, required: true },
   extraLengthMeters: { type: Number, default: 0 },
+  wireId: { type: Schema.Types.ObjectId, ref: 'Wire', default: null },
   organizationId: { type: String, required: true, index: true },
   createdBy: {
     userId: { type: String, required: true },

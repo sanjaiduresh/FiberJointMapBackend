@@ -9,6 +9,7 @@ import jointsRouter from './routes/joints';
 import authRouter from './routes/auth';
 import cutsRouter from './routes/cuts';
 import segmentsRouter from './routes/segments';
+import wiresRouter from './routes/wires';
 import usersRouter from './routes/users';
 import adminRouter from './routes/admin';
 const app = express();
@@ -40,6 +41,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/joints', jointsRouter);
 app.use('/api/cuts', cutsRouter);
 app.use('/api/segments', segmentsRouter);
+app.use('/api/wires', wiresRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/admin', adminRouter);
 

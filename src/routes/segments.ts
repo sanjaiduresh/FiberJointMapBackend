@@ -42,7 +42,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 // POST /api/segments — create a segment between two joints (auth required)
 router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { fromJointId, toJointId, cableType, fiberCount, waypoints, lengthMeters, extraLengthMeters } = req.body;
+    const { fromJointId, toJointId, cableType, fiberCount, waypoints, lengthMeters, extraLengthMeters, wireId } = req.body;
 
     if (!fromJointId || !toJointId || !cableType || fiberCount == null) {
       res.status(400).json({ error: 'fromJointId, toJointId, cableType, fiberCount required' });
@@ -101,6 +101,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       fiberCount,
       lengthMeters: finalLength,
       extraLengthMeters: extraLengthMeters || 0,
+      wireId: wireId || null,
       organizationId: req.user!.organizationId,
       createdBy: {
         userId: req.user!.userId,
@@ -142,7 +143,7 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) =>
 // PUT /api/segments/:id — Edit a segment
 router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { cableType, fiberCount, lengthMeters, extraLengthMeters, waypoints } = req.body;
+    const { cableType, fiberCount, lengthMeters, extraLengthMeters, waypoints, wireId } = req.body;
 
     const segment = await Segment.findOne({ _id: req.params.id, organizationId: req.user!.organizationId });
     if (!segment) {
@@ -161,6 +162,10 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
     if (fiberCount !== undefined && fiberCount !== segment.fiberCount) { updates.fiberCount = fiberCount; hasChanges = true; }
     if (lengthMeters !== undefined && lengthMeters !== segment.lengthMeters) { updates.lengthMeters = lengthMeters; hasChanges = true; }
     if (extraLengthMeters !== undefined && extraLengthMeters !== segment.extraLengthMeters) { updates.extraLengthMeters = extraLengthMeters; hasChanges = true; }
+    if (wireId !== undefined) {
+      const currentWireId = segment.wireId ? segment.wireId.toString() : null;
+      if (wireId !== currentWireId) { (updates as any).wireId = wireId || null; hasChanges = true; }
+    }
     if (waypoints !== undefined) {
       const validWaypoints: Array<{ lat: number; lng: number }> = Array.isArray(waypoints)
         ? waypoints.filter((w: any) => typeof w.lat === 'number' && typeof w.lng === 'number')
@@ -202,6 +207,7 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
       if (updates.fiberCount !== undefined) segment.fiberCount = updates.fiberCount;
       if (updates.lengthMeters !== undefined) segment.lengthMeters = updates.lengthMeters;
       if (updates.extraLengthMeters !== undefined) segment.extraLengthMeters = updates.extraLengthMeters;
+      if ((updates as any).wireId !== undefined) (segment as any).wireId = (updates as any).wireId;
       if (updates.waypoints !== undefined) segment.waypoints = updates.waypoints;
     }
 
