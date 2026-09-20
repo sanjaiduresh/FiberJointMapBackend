@@ -28,8 +28,17 @@ if (!JWT_SECRET) {
 }
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  })
+);
+app.options('*', cors());
 app.use(express.json());
+
 
 // Health check
 app.get('/api/test', (_req, res) => {
