@@ -1,6 +1,8 @@
 import { Router, Response } from 'express';
+import { Types } from 'mongoose';
 import Segment from '../models/Segment';
 import FiberJoint from '../models/FiberJoint';
+import Cut from '../models/Cut';
 import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
@@ -119,6 +121,77 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     res.status(201).json(segment);
   } catch (err) {
     res.status(500).json({ error: 'Failed to create segment' });
+  }
+});
+
+// POST /api/segments/bulk — Bulk create multiple cable segments
+router.post('/bulk', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const { segments } = req.body;
+    if (!Array.isArray(segments) || segments.length === 0) {
+      res.status(400).json({ error: 'segments array is required' });
+      return;
+    }
+
+    const approvalStatus = req.user!.role === 'OWNER' ? 'APPROVED' : 'PENDING';
+    const validDocs: any[] = [];
+    const skippedItems: any[] = [];
+
+    for (const s of segments) {
+      if (!s.fromJointId || !Types.ObjectId.isValid(s.fromJointId) ||
+          !s.toJointId || !Types.ObjectId.isValid(s.toJointId)) {
+        skippedItems.push({ item: s, reason: 'Invalid or unmapped fromJointId/toJointId' });
+        continue;
+      }
+
+      const wireIdVal = (s.wireId && Types.ObjectId.isValid(s.wireId)) ? s.wireId : null;
+
+      validDocs.push({
+        fromJointId: s.fromJointId,
+        toJointId: s.toJointId,
+        waypoints: Array.isArray(s.waypoints) ? s.waypoints : [],
+        cableType: s.cableType || 'Single Mode',
+        fiberCount: s.fiberCount ?? 12,
+        lengthMeters: s.lengthMeters ?? 0,
+        extraLengthMeters: s.extraLengthMeters ?? 0,
+        wireId: wireIdVal,
+        organizationId: req.user!.organizationId,
+        createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+        approvalStatus,
+      });
+    }
+
+    if (validDocs.length === 0) {
+      res.status(400).json({
+        error: 'No valid segments were provided. Ensure connected joint IDs are valid ObjectIds.',
+        skipped: skippedItems.length,
+      });
+      return;
+    }
+
+    const created = await Segment.insertMany(validDocs);
+    res.status(201).json(created);
+  } catch (err: any) {
+    console.error('Bulk segment creation error:', err);
+    res.status(500).json({ error: err.message || 'Failed to bulk create segments' });
+  }
+});
+
+// DELETE /api/segments/danger/all — Delete all segments for this organization (OWNER & ADMIN only)
+router.delete('/danger/all', authMiddleware, requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  try {
+    const orgId = req.user!.organizationId;
+    const deletedSegments = await Segment.deleteMany({ organizationId: orgId });
+    const deletedCuts = await Cut.deleteMany({ organizationId: orgId });
+
+    res.json({
+      message: 'All cable connections deleted successfully',
+      deletedSegments: deletedSegments.deletedCount,
+      deletedCuts: deletedCuts.deletedCount,
+    });
+  } catch (err) {
+    console.error('Delete all segments error:', err);
+    res.status(500).json({ error: 'Failed to delete all segments' });
   }
 });
 

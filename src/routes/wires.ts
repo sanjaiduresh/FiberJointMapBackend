@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import Wire from '../models/Wire';
-import { authMiddleware, AuthRequest } from '../middleware/auth';
+import Segment from '../models/Segment';
+import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -66,6 +67,23 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
       return;
     }
     res.status(500).json({ error: 'Failed to update wire' });
+  }
+});
+
+// DELETE /api/wires/danger/all — delete all wires for this organization (OWNER & ADMIN only)
+router.delete('/danger/all', authMiddleware, requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  try {
+    const orgId = req.user!.organizationId;
+    const deletedWires = await Wire.deleteMany({ organizationId: orgId });
+    await Segment.updateMany({ organizationId: orgId }, { $unset: { wireId: 1 } });
+
+    res.json({
+      message: 'All wires deleted successfully',
+      deletedWires: deletedWires.deletedCount,
+    });
+  } catch (err) {
+    console.error('Delete all wires error:', err);
+    res.status(500).json({ error: 'Failed to delete all wires' });
   }
 });
 

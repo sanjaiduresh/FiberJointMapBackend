@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import FiberJoint from '../models/FiberJoint';
 import Segment from '../models/Segment';
 import Cut from '../models/Cut';
+import Wire from '../models/Wire';
 import { authMiddleware, requireRole, AuthRequest } from '../middleware/auth';
 import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
@@ -91,6 +92,38 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/joints/bulk — Bulk create multiple joints
+router.post('/bulk', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const { joints } = req.body;
+    if (!Array.isArray(joints) || joints.length === 0) {
+      res.status(400).json({ error: 'joints array is required' });
+      return;
+    }
+
+    const approvalStatus = req.user!.role === 'OWNER' ? 'APPROVED' : 'PENDING';
+    const docs = joints.map((j: any) => ({
+      label: j.label,
+      notes: j.notes || '',
+      jointType: j.jointType || 'Main',
+      cableType: j.cableType || 'Single Mode',
+      fiberCount: j.fiberCount ?? 12,
+      icon: j.icon || 'default',
+      lat: j.lat,
+      lng: j.lng,
+      organizationId: req.user!.organizationId,
+      createdBy: { userId: req.user!.userId, userName: req.user!.userName },
+      approvalStatus,
+    }));
+
+    const created = await FiberJoint.insertMany(docs);
+    res.status(201).json(created);
+  } catch (err) {
+    console.error('Bulk joint creation error:', err);
+    res.status(500).json({ error: 'Failed to bulk create joints' });
+  }
+});
+
 // PUT /api/joints/:id
 router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
@@ -177,6 +210,67 @@ router.put('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('Update joint error:', err);
     res.status(500).json({ error: 'Failed to update joint' });
+  }
+});
+
+// DELETE /api/joints/danger/all — Delete all joints (and their connected segments & cuts) for this organization (OWNER & ADMIN only)
+router.delete('/danger/all', authMiddleware, requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  try {
+    const orgId = req.user!.organizationId;
+    const deletedJoints = await FiberJoint.deleteMany({ organizationId: orgId });
+    const deletedSegments = await Segment.deleteMany({ organizationId: orgId });
+    const deletedCuts = await Cut.deleteMany({ organizationId: orgId });
+
+    res.json({
+      message: 'All joints, connections, and cuts deleted successfully',
+      deletedJoints: deletedJoints.deletedCount,
+      deletedSegments: deletedSegments.deletedCount,
+      deletedCuts: deletedCuts.deletedCount,
+    });
+  } catch (err) {
+    console.error('Delete all joints error:', err);
+    res.status(500).json({ error: 'Failed to delete all joints' });
+  }
+});
+
+// POST /api/joints/danger/reset-network — Reset network for this organization (OWNER & ADMIN only)
+router.post('/danger/reset-network', authMiddleware, requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  try {
+    const orgId = req.user!.organizationId;
+    const { deleteJoints = true, deleteSegments = true, deleteWires = true, deleteCuts = true } = req.body;
+
+    let deletedJoints = 0;
+    let deletedSegments = 0;
+    let deletedWires = 0;
+    let deletedCuts = 0;
+
+    if (deleteJoints) {
+      const resJ = await FiberJoint.deleteMany({ organizationId: orgId });
+      deletedJoints = resJ.deletedCount;
+    }
+    if (deleteSegments) {
+      const resS = await Segment.deleteMany({ organizationId: orgId });
+      deletedSegments = resS.deletedCount;
+    }
+    if (deleteWires) {
+      const resW = await Wire.deleteMany({ organizationId: orgId });
+      deletedWires = resW.deletedCount;
+    }
+    if (deleteCuts) {
+      const resC = await Cut.deleteMany({ organizationId: orgId });
+      deletedCuts = resC.deletedCount;
+    }
+
+    res.json({
+      message: 'Network data reset successfully',
+      deletedJoints,
+      deletedSegments,
+      deletedWires,
+      deletedCuts,
+    });
+  } catch (err) {
+    console.error('Reset network error:', err);
+    res.status(500).json({ error: 'Failed to reset network' });
   }
 });
 
